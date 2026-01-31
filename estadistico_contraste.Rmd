@@ -1,0 +1,115 @@
+---
+title: "estadistico_contraste"
+author: "Jesús F García Gavilán"
+date: "2026-01-31"
+output:
+  pdf_document:
+    latex_engine: pdflatex
+header-includes:
+   - \usepackage[utf8]{inputenc}
+   - \DeclareUnicodeCharacter{2212}{-}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Librerias:
+
+```{r, message=F, warning=F}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+```
+
+# Modelo:
+
+El modelo analiza cómo diversas variables (`edad`, `sexo`, `tabaco`, `actividad física`, etc.) explican los niveles de `HDL` utilizando la base de datos `met_CQI_rl`. 
+
+En esta celda definimos nuestra hipótesis de investigación. Queremos entender cómo la `edad` y otras 15 variables (clínicas, demográficas y de estilo de vida) se relacionan con los niveles de colesterol `HDL`
+
+- `lm()`: Es la función para modelos lineales (linear models).
+- `hdl ~ ...`: El símbolo ~ separa la variable dependiente (`HDL`) de las independientes.
+- `as.factor()`: Crucial para tratar variables categóricas (como el `sexo` o el `tabaco`) como grupos y no como valores numéricos.
+- `data` = `met_CQI_rl`: Especificamos nuestra fuente de datos limpia.
+
+```{r}
+rlm <- lm(hdl ~ edad0 + as.factor(sexo) + as.factor(tabaco0) + ps1 + ps2 + 
+           as.factor(grup_int) + energiat + alcoholg + 
+           imc1 + idcluster + escolar1 + getota_1 + as.factor(hipercol0) + 
+           as.factor(hta0) + as.factor(tra_col0) + as.factor(trathta0), 
+           data = met_CQI_rl)
+```
+
+# Resumen estadístico
+
+Aquí solicitamos a R que procese toda la información del modelo. No solo buscamos los coeficientes individuales, sino las métricas globales de calidad: el error residual, el R-cuadrado y, sobre todo, el estadístico F
+
+- `summary(rlm)`: Genera un objeto que contiene toda la "inteligencia" del modelo.
+- `Residuals`: Nos da una idea de la dispersión de los errores.
+- `Adjusted R-squared`: Nos indica que el % de la variabilidad del HDL se explica por nuestro modelo.
+
+```{r}
+resumen <- summary(rlm)
+resumen
+```
+
+# Extracción de los componentes del estadístico F
+
+Para poder explicar el "corazón" de la regresión, aislamos numéricamente el estadístico de contraste. Esto nos permite cuantificar la relación señal/ruido de forma independiente para luego visualizarla.
+
+- `resumen$fstatistic`: Accedemos directamente a los tres valores del test F
+- `pf(...)`: Es la función de distribución de probabilidad. Calcula el área bajo la curva a la derecha de nuestro valor F para obtener el p-valor global.
+- `lower.tail = F`: Le indicamos a R que queremos la probabilidad de la cola superior, que es la que define la significación estadística.
+
+```{r}
+f_valor <- resumen$fstatistic[1]
+df_num  <- resumen$fstatistic[2]
+df_den  <- resumen$fstatistic[3]
+p_global <- pf(f_valor, df_num, df_den, lower.tail = F)
+```
+
+```{r, warning=F}
+resumen$fstatistic %>%
+  as.list() %>%
+  as.data.frame() %>%
+  rename(f_valor = value, df_num = numdf, df_den = dendf) %>%
+  mutate(p_global = pf(f_valor, df_num, df_den, lower.tail = F),
+         across(everything(), as.character)) %>%
+  tidyr::pivot_longer(cols = everything(), names_to = "Metrica", values_to = "Valor") %>%
+  mutate(Metrica = case_when(Metrica == "f_valor" ~ "Estadístico F",
+                             Metrica == "df_num" ~ "GL Numerador (Modelo)",
+                             Metrica == "df_den" ~ "GL Denominador (Error)",
+                             Metrica == "p_global" ~ "P-valor Global"),
+         Valor = case_when(Metrica == "P-valor Global" ~ format.pval(as.numeric(Valor), eps = 0.001),
+                           Metrica == "Estadístico F" ~ as.character(round(as.numeric(Valor), 2)),
+                           T ~ Valor)) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+# Visualización para la presentación
+
+Esta es la parte más potente para una presentación. Traducimos números abstractos en una imagen. Mostramos cómo se vería el mundo si el azar fuera el único responsable (la curva) y dónde cae nuestra realidad (la línea del estadístico F).
+
+- `curve(df(x, ...))`: Dibuja la densidad de la distribución F teórica bajo la hipótesis nula (H0).
+- `abline(v = f_valor)`: Traza una línea vertical en el valor F.
+- Interpretación visual: Al estar nuestra línea tan alejada de la masa principal de la curva (que está cerca de 1), demostramos visualmente que la probabilidad de que nuestros resultados sean casualidad es prácticamente inexistente 
+
+```{r}
+curve(df(x, df_num, df_den), from = 0, to = f_valor + 2, 
+      lwd = 2, col = "grey", main = "Contraste Global del Modelo (Estadístico F)",
+      xlab = "Valor de F (Señal/Ruido)", ylab = "Densidad")
+
+# Sombreado de la zona de rechazo (crítica)
+abline(v = f_valor, col = "#2c3e50", lwd = 3, lty = 2)
+text(f_valor, 0.1, paste("F observado =", round(f_valor, 2)), pos = 4, font = 2)
+```
+
+```{r, echo=F}
+# Resultado final
+cat("Señal detectada:", ifelse(p_global < 0.05, "SÍ", "NO"), "\n")
+cat("Valor p global:", format.pval(p_global))
+```
+
+Como ven en el gráfico, si nuestro modelo fuera puro ruido, el valor F debería estar cerca de la zona gris. Pero nuestro valor está tan a la derecha que ni siquiera entra en el gráfico estándar; eso es una señal clínica real
